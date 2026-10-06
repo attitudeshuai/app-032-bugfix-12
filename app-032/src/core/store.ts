@@ -94,6 +94,17 @@ export function distributeLayers(l: Lantern) {
   syncLayerDiameters(l)
 }
 
+/**
+ * 尺寸反推写回：最大/上口/底口三个直径同步更新（整毫米三元组，由 core/reverse.ts 算出），
+ * 并立即重算各分层直径与总高——参数页、分层表、放样预览共用同一份数据，改一处处处刷新。
+ */
+export function applyReversedDiameters(l: Lantern, maxMm: number, mouthMm: number, baseMm: number) {
+  l.maxDiameterMm = Math.max(20, Math.round(maxMm))
+  l.mouthDiameterMm = Math.max(10, Math.round(mouthMm))
+  l.baseDiameterMm = Math.max(10, Math.round(baseMm))
+  syncLayerDiameters(l)
+}
+
 export function addLantern(l: Lantern) {
   state.lanterns.unshift(l)
   return l
@@ -176,6 +187,7 @@ export function useLanternStore() {
     duplicateLantern,
     removeLantern,
     distributeLayers,
-    syncLayerDiameters
+    syncLayerDiameters,
+    applyReversedDiameters
   }
 }

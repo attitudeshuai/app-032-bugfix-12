@@ -3,12 +3,12 @@ import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import LanternPreview from '../components/LanternPreview.vue'
 import ChecksPanel from '../components/ChecksPanel.vue'
-import { getLantern, distributeLayers, syncLayerDiameters } from '../core/store'
+import { applyReversedDiameters, getLantern, distributeLayers, syncLayerDiameters } from '../core/store'
 import { computeAll } from '../core/checks'
 import { DEFAULT_LOFT_OPTIONS } from '../core/paginate'
-import { buildGeometry, polyhedronInfo, r1 } from '../core/geometry'
+import { buildGeometry, polyhedronInfo, r1, ringPerimeter } from '../core/geometry'
 import { COVERINGS, CRAFT, coveringSpec, kindLabel } from '../core/craft'
-import { diameterFromPerimeter, diameterFromRib } from '../core/checks'
+import { mmToCm, reverseFromRib, reverseFromRing } from '../core/reverse'
 import type { Lantern, Panel } from '../core/types'
 
 const route = useRoute()
@@ -88,25 +88,50 @@ function setSides(e: Event) {
   l.sides = Math.max(3, Math.min(l.kind === 'revolution' ? 24 : 12, Math.round(Number((e.target as HTMLInputElement).value) || 3)))
 }
 
-// ---- 尺寸反推（§5） ----
+// ---- 尺寸反推（§5，算法见 core/reverse.ts：扣余量 → 正算公式反解 → 整毫米写回） ----
 const ribInput = ref(700)
 const ringInput = ref(1000)
 const ribOut = computed(() => {
   const l = lantern.value
-  if (!l) return 0
-  return diameterFromRib(l, ribInput.value)
+  return l ? reverseFromRib(l, ribInput.value) : null
 })
 const ringOut = computed(() => {
   const l = lantern.value
-  if (!l) return 0
-  const polygon = l.kind === 'prism' || l.kind === 'box'
-  return diameterFromPerimeter(ringInput.value, l.sides, polygon, l.lashAllowanceMm) * 2
+  return l ? reverseFromRing(l, ringInput.value) : null
 })
-function applyDiameter(v: number) {
+
+function applyRib() {
   const l = lantern.value
-  if (!l) return
-  l.maxDiameterMm = Math.max(20, Math.round(v))
+  const r = ribOut.value
+  if (!l || !r || !r.ok) return
+  applyReversedDiameters(l, r.writeBack.maxMm, r.writeBack.mouthMm, r.writeBack.baseMm)
 }
+
+function applyRing() {
+  const l = lantern.value
+  const r = ringOut.value
+  if (!l || !r || !r.ok) return
+  applyReversedDiameters(l, r.writeBack.maxMm, r.writeBack.mouthMm, r.writeBack.baseMm)
+}
+
+/**
+ * 当前灯样状态一览：反推结果、上口/底口与各层直径、放样预览三处共用同一份数据。
+ * 改一处其余几处跟着刷新；哪一处还是老数，对照这一行就能直接看出来。
+ */
+const currentState = computed(() => {
+  const f = full.value
+  if (!f) return null
+  const g = f.frame.geometry
+  const rib = f.frame.members.find((m) => m.kind === 'vertical' || m.kind === 'rib')
+  return {
+    maxMm: g.maxR * 2,
+    mouthMm: g.mouthR * 2,
+    baseMm: g.baseR * 2,
+    ribNetMm: rib ? rib.rawLengthMm : 0,
+    ribStockMm: rib ? rib.lengthMm : 0,
+    bellyPerimeterMm: ringPerimeter(g.maxR, g.n, g.polygon)
+  }
+})
 
 const panelsPreview = computed<Panel[]>(() => full.value?.panels.panels.slice(0, 4) || [])
 
@@ -297,19 +322,57 @@ function onCtrl(v: { which: 1 | 2; x: number; y: number }) {
       <div class="reverse">
         <div class="rev-row">
           <label>现有竖篾长 (mm)</label>
-          <input v-model.number="ribInput" type="number" min="50" step="10" />
-          <span class="mono">→ 最大直径 {{ ribOut.toFixed(1) }}mm</span>
-          <button @click="applyDiameter(ribOut)">应用</button>
+          <input v-model.number="ribInput" type="number" min="0" step="10" />
+          <template v-if="ribOut && ribOut.ok">
+            <span class="mono">
+              → 最大直径 ≈ {{ ribOut.maxDiameterMm.toFixed(1) }}mm
+              <em>{{ mmToCm(ribOut.maxDiameterMm).toFixed(2) }}cm</em>
+            </span>
+            <button @click="applyRib">应用</button>
+          </template>
+          <span v-else-if="ribOut" class="rev-error">⚠ {{ ribOut.error }}</span>
         </div>
+        <small v-if="ribOut && ribOut.ok" class="hint">
+          净长 {{ ribOut.netLengthMm.toFixed(1) }}mm（已扣两端余量 2×{{ lantern.lashAllowanceMm }}mm）·
+          应用写回：最大 {{ ribOut.writeBack.maxMm }} / 上口 {{ ribOut.writeBack.mouthMm }} / 底口
+          {{ ribOut.writeBack.baseMm }}mm（整毫米·按比例·总高不变），竖篾备料
+          {{ ribOut.stockMm.toFixed(1) }}mm ≤ {{ ribInput }}mm
+        </small>
+
         <div class="rev-row">
           <label>单根横篾长 (mm)</label>
-          <input v-model.number="ringInput" type="number" min="50" step="10" />
-          <span class="mono">→ 圈直径 {{ ringOut.toFixed(1) }}mm</span>
-          <button @click="applyDiameter(ringOut)">应用</button>
+          <input v-model.number="ringInput" type="number" min="0" step="10" />
+          <template v-if="ringOut && ringOut.ok">
+            <span class="mono">
+              → 圈直径 ≈ {{ ringOut.diameterMm.toFixed(1) }}mm
+              <em>{{ mmToCm(ringOut.diameterMm).toFixed(2) }}cm</em>
+            </span>
+            <button @click="applyRing">应用</button>
+          </template>
+          <span v-else-if="ringOut" class="rev-error">⚠ {{ ringOut.error }}</span>
         </div>
+        <small v-if="ringOut && ringOut.ok" class="hint">
+          净周长 {{ ringOut.netLengthMm.toFixed(1) }}mm（已扣 {{ ringOut.joints }} 处接头 ×{{
+            lantern.lashAllowanceMm
+          }}mm）<template v-if="ringOut.polygon">· 每边 {{ ringOut.edgeMm.toFixed(1) }}mm × {{ ringOut.sides }} 棱</template>·
+          应用写回：最大 {{ ringOut.writeBack.maxMm }} / 上口 {{ ringOut.writeBack.mouthMm }} / 底口
+          {{ ringOut.writeBack.baseMm }}mm，整圈备料 {{ ringOut.stockMm.toFixed(1) }}mm ≤ {{ ringInput }}mm
+        </small>
+
         <small class="hint">
-          竖篾反推保持收口比例与总高不变，二分求最大直径；横篾反推已扣掉接头绑扎余量
-          {{ lantern.lashAllowanceMm }}mm。
+          算法：净长 = 篾长 − 接头余量（竖篾两端 2 处；横篾圈圆形 1 处<template v-if="ringOut && ringOut.polygon">
+            / 多边形按棱数 {{ ringOut.sides }} 处</template
+          >）。 竖篾保持收口比例与总高不变，按轮廓折线长二分求解（取舍：保造型比例，直径不是整数，附 cm 换算）；
+          <template v-if="ringOut && ringOut.polygon"
+            >多边形按弦长公式 周长 = {{ ringOut.sides }} × 直径 × sin(π/{{ ringOut.sides }}) 反解；</template
+          >圆形按 周长 = π × 直径 反解。 显示 mm 一位小数，写回整毫米并向下取整，下料不短；篾不够扣余量时拦截，不出负数。
+        </small>
+
+        <small v-if="currentState" class="hint state-line">
+          当前灯样：最大 ⌀{{ currentState.maxMm.toFixed(1) }} · 上口 ⌀{{ currentState.mouthMm.toFixed(1) }} · 底口 ⌀{{
+            currentState.baseMm.toFixed(1)
+          }}mm ｜ 竖篾净长 {{ currentState.ribNetMm.toFixed(1) }}mm（备料 {{ currentState.ribStockMm.toFixed(1) }}）｜
+          最大处圈周长 {{ currentState.bellyPerimeterMm.toFixed(1) }}mm
         </small>
       </div>
     </section>
@@ -547,6 +610,24 @@ small {
   flex: 1;
   color: var(--blue);
   white-space: nowrap;
+}
+
+.rev-row span em {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+
+.rev-row .rev-error {
+  color: var(--red);
+  white-space: normal;
+  font-size: 12px;
+}
+
+.state-line {
+  border-top: 1px dashed var(--line-strong);
+  padding-top: 6px;
+  color: var(--ink);
 }
 
 button {

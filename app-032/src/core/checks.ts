@@ -221,17 +221,4 @@ function frameGeometryOf(l: Lantern) {
   return buildFrame(l).geometry
 }
 
-/** 由圆周长反推直径（尺寸反推工具用） */
-export function diameterFromPerimeter(lengthMm: number, n: number, polygon: boolean, lashMm: number): number {
-  void n
-  void polygon
-  void lashMm
-  return lengthMm / Math.PI
-}
-
-/** 由母线（竖篾）长度反推可用最大直径 */
-export function diameterFromRib(l: Lantern, ribLengthMm: number): number {
-  const segs = segmentInfos(buildFrame(l).geometry)
-  const len = segs.reduce((a, s) => a + s.slantMm, 0)
-  return (ribLengthMm * l.maxDiameterMm) / Math.max(1, len)
-}
+/* 尺寸反推已移至 core/reverse.ts（竖篾/横篾统一算法：扣余量 → 正算公式反解 → 整毫米写回） */
