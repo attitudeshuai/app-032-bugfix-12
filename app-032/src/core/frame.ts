@@ -9,6 +9,7 @@ import {
   polygonEdge,
   polyhedronInfo,
   r1,
+  ringJoints,
   segmentInfos,
   shoulderBendRadius,
   TAU,
@@ -57,6 +58,8 @@ export function buildFrame(l: Lantern): FrameResult {
   const n = g.n
   const segs = segmentInfos(g)
   const cornerLength = segs.reduce((s, x) => s + x.slantMm, 0)
+  // 横篾圈接头处数：圆形 1 处、多边形 n 处（正算备料与反推共用，规格书 §8）
+  const ringJointCount = ringJoints(n, g.polygon)
 
   if (l.kind === 'prism' || l.kind === 'box') {
     push({
@@ -72,6 +75,8 @@ export function buildFrame(l: Lantern): FrameResult {
     const bendAngle = 180 - 360 / n
     for (let i = 1; i < g.sections.length - 1; i++) {
       const r = g.sections[i].radiusMm
+      // 一圈由 n 根棱篾合围，逐根下料：每根净长 = 弦长 2R sin(π/n)，各含 1 处接头余量；
+      // n 根合计 = n·弦长 + n·余量（与横篾整圈反推口径一致，规格书 §8）
       const edge = polygonEdge(r, n)
       push({
         kind: 'ring',
@@ -82,7 +87,7 @@ export function buildFrame(l: Lantern): FrameResult {
         lashJoints: 1,
         bendAngleDeg: r1(bendAngle),
         group: `横篾（第 ${i} 层）`,
-        note: `圈直径 ${r1(r * 2)}mm，合围 ${n} 根，含 1 处接头余量`
+        note: `外接圈直径 ${r1(r * 2)}mm，每根弦长 ${r1(edge)}mm，合围 ${n} 根（净合围 ${r1(ringJointCount * edge)}mm）；每根含 1 处接头余量 ${lash}mm，折角 ${r1(bendAngle)}°`
       })
     }
     const topR = g.sections[g.sections.length - 1].radiusMm
@@ -99,7 +104,7 @@ export function buildFrame(l: Lantern): FrameResult {
       bendAngleDeg: r1(bendAngle),
       bendRadiusMm: r1(shoulderBendRadius(g.maxR - topR, g.heightMm * g.kTop)),
       group: '收口圈',
-      note: `收口外接直径 ${r1(topR * 2)}mm，收口段曲率半径建议值`
+      note: `收口外接直径 ${r1(topR * 2)}mm，每根弦长 ${r1(topEdge)}mm，${n} 根合围（每根含 1 处接头余量 ${lash}mm）；收口段曲率半径建议值`
     })
     push({
       kind: 'base_ring',
@@ -111,7 +116,7 @@ export function buildFrame(l: Lantern): FrameResult {
       bendAngleDeg: r1(bendAngle),
       bendRadiusMm: r1(shoulderBendRadius(g.maxR - botR, g.heightMm * g.kBot)),
       group: '底盘圈',
-      note: `底盘外接直径 ${r1(botR * 2)}mm`
+      note: `底盘外接直径 ${r1(botR * 2)}mm，每根弦长 ${r1(botEdge)}mm，${n} 根合围（每根含 1 处接头余量 ${lash}mm）`
     })
     if (l.kind === 'box') {
       push({
@@ -155,9 +160,9 @@ export function buildFrame(l: Lantern): FrameResult {
         kind: 'ring',
         label: `第 ${i} 层横篾圈`,
         rawLengthMm: r1(circ),
-        lengthMm: r1(circ + lash),
+        lengthMm: r1(circ + ringJointCount * lash),
         qty: 1,
-        lashJoints: 1,
+        lashJoints: ringJointCount,
         bendRadiusMm: r1(r),
         group: `横篾圈（第 ${i} 层）`,
         note: `圈直径 ${r1(r * 2)}mm，圆形圈 1 处接头`
@@ -169,9 +174,9 @@ export function buildFrame(l: Lantern): FrameResult {
       kind: 'mouth_ring',
       label: '收口圈',
       rawLengthMm: r1(TAU * topR),
-      lengthMm: r1(TAU * topR + lash),
+      lengthMm: r1(TAU * topR + ringJointCount * lash),
       qty: 1,
-      lashJoints: 1,
+      lashJoints: ringJointCount,
       bendRadiusMm: r1(topR),
       group: '收口圈',
       note: `圈直径 ${r1(topR * 2)}mm，弯曲半径 = 口径/2 = ${r1(topR)}mm`
@@ -180,9 +185,9 @@ export function buildFrame(l: Lantern): FrameResult {
       kind: 'base_ring',
       label: '底盘圈',
       rawLengthMm: r1(TAU * botR),
-      lengthMm: r1(TAU * botR + lash),
+      lengthMm: r1(TAU * botR + ringJointCount * lash),
       qty: 1,
-      lashJoints: 1,
+      lashJoints: ringJointCount,
       bendRadiusMm: r1(botR),
       group: '底盘圈',
       note: `圈直径 ${r1(botR * 2)}mm`
@@ -192,9 +197,9 @@ export function buildFrame(l: Lantern): FrameResult {
         kind: 'ring',
         label: '收口支撑篾',
         rawLengthMm: r1(TAU * ((topR + g.maxR) / 2)),
-        lengthMm: r1(TAU * ((topR + g.maxR) / 2) + lash),
+        lengthMm: r1(TAU * ((topR + g.maxR) / 2) + ringJointCount * lash),
         qty: 1,
-        lashJoints: 1,
+        lashJoints: ringJointCount,
         bendRadiusMm: r1(shoulderBendRadius(g.maxR - topR, g.heightMm * g.kTop)),
         group: '收口圈',
         note: '撑起收口肩部曲线，弯曲半径由收口口径与收口段高决定'

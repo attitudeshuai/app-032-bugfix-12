@@ -8,6 +8,7 @@ import { buildFrame, type FrameResult } from './frame'
 import { buildPanels, panelNetArea, type PanelResult } from './panels'
 import { computeBatch, computeMaterials, type BatchMaterials, type SingleLightMaterials } from './materials'
 import { assertNoPanelSplit, paginate, type LoftOptions, type Sheet } from './paginate'
+import { reverseFromRib, reverseFromRing, ribNetLength } from './reverse'
 import { CRAFT } from './craft'
 
 export interface FullResult {
@@ -191,7 +192,106 @@ function runChecks(
     })
   }
 
+  // ---- CHK-09 尺寸反推：幂等 + 正算闭合 + 拦截负数 ----
+  out.push(checkReverse(l, g))
+
   return out
+}
+
+/**
+ * 反推回归核对：
+ *  1. 同一根篾长连按两次，写回的直径三元组必须一模一样（幂等）；
+ *  2. 反推直径正算回构件表，所需备料不得长过该篾，且误差 ≤ 1mm（取整量化）；
+ *  3. 余量扣到 0 以下必须拦截，不得给出负数直径。
+ */
+function checkReverse(l: Lantern, g: ReturnType<typeof buildFrame>['geometry']): CheckResult {
+  if (l.kind === 'polyhedron') {
+    return {
+      id: 'CHK-09',
+      title: '尺寸反推：幂等、正算闭合、余量拦截',
+      pass: true,
+      value: '多面体不适用',
+      detail: '正四面体/八面体棱长由外接球直径直接确定，不提供竹篾反推入口。'
+    }
+  }
+  const lash = Math.max(0, l.lashAllowanceMm)
+  const polygon = l.kind === 'prism' || l.kind === 'box'
+  const n = g.n
+  const details: string[] = []
+  let pass = true
+
+  // 取当前灯样最粗处一圈的实际备料长，喂给横篾反推，应回到当前最大直径
+  {
+    const rNow = g.maxR
+    const perimeter = polygon ? n * polygonEdge(rNow, n) : Math.PI * 2 * rNow
+    const joints = polygon ? n : 1
+    const stock = perimeter + joints * lash
+    const r1st = reverseFromRing(l, stock)
+    const clone = structuredClone(l)
+    clone.maxDiameterMm = r1st.roundedDiameterMm
+    clone.mouthDiameterMm = r1st.mouthDiameterMm
+    clone.baseDiameterMm = r1st.baseDiameterMm
+    const r2nd = reverseFromRing(clone, stock)
+    const idem =
+      r1st.ok &&
+      r2nd.ok &&
+      r1st.roundedDiameterMm === r2nd.roundedDiameterMm &&
+      r1st.mouthDiameterMm === r2nd.mouthDiameterMm &&
+      r1st.baseDiameterMm === r2nd.baseDiameterMm
+    const close = r1st.ok && Math.abs(r1st.roundedDiameterMm - l.maxDiameterMm) <= 1
+    if (!idem || !close) pass = false
+    details.push(
+      `横篾：取本灯最粗圈备料 ${f1(stock)}mm 反推得 ⌀${r1st.roundedDiameterMm}mm（当前 ⌀${l.maxDiameterMm}mm，Δ${f1(Math.abs(r1st.roundedDiameterMm - l.maxDiameterMm))}mm），再按一次 ${r2nd.ok ? '⌀' + r2nd.roundedDiameterMm + 'mm' : '被拦'}${idem ? '，幂等' : '，两次不一致！'}`
+    )
+  }
+
+  // 竖篾反推幂等（双平口时竖篾反推本身不可用，只核对拦截）
+  if (l.mouthStyle !== 'flat' || l.bottomStyle !== 'flat') {
+    const ribRaw = ribNetLength(l)
+    const stock = ribRaw + 2 * lash
+    const r1st = reverseFromRib(l, stock)
+    const clone = structuredClone(l)
+    if (r1st.ok) {
+      clone.maxDiameterMm = r1st.roundedDiameterMm
+      clone.mouthDiameterMm = r1st.mouthDiameterMm
+      clone.baseDiameterMm = r1st.baseDiameterMm
+    }
+    const r2nd = reverseFromRib(clone, stock)
+    const idem =
+      r1st.ok &&
+      r2nd.ok &&
+      r1st.roundedDiameterMm === r2nd.roundedDiameterMm &&
+      r1st.mouthDiameterMm === r2nd.mouthDiameterMm &&
+      r1st.baseDiameterMm === r2nd.baseDiameterMm
+    const close = r1st.ok && Math.abs(r1st.roundedDiameterMm - l.maxDiameterMm) <= 1
+    // 正算闭合：写回后竖篾含余量备料不得超过这根篾
+    const backLen = r1st.ok ? ribNetLength(clone) + 2 * lash : 0
+    const feasible = r1st.ok && backLen <= stock + 0.5
+    if (!idem || !close || !feasible) pass = false
+    details.push(
+      `竖篾：取本灯竖篾备料 ${f1(stock)}mm 反推得 ⌀${r1st.roundedDiameterMm}mm（Δ${r1st.ok ? f1(Math.abs(r1st.roundedDiameterMm - l.maxDiameterMm)) : '—'}mm），再按一次 ${r2nd.ok ? '⌀' + r2nd.roundedDiameterMm + 'mm' : '被拦'}${idem ? '，幂等' : '，两次不一致！'}；回算备料 ${f1(backLen)}mm ≤ ${f1(stock)}mm${feasible ? '' : '，超料！'}`
+    )
+  }
+
+  // 余量拦截：篾长 ≤ 应扣余量 / 最小圈都围不起来时，必须 ok=false 且不产出正数直径
+  {
+    const badRib = reverseFromRib(l, 2 * lash) // 净长 = 0
+    const badRing = reverseFromRing(l, 0) // 非法输入
+    const blocked =
+      !badRib.ok && badRib.roundedDiameterMm === 0 && !badRing.ok && badRing.roundedDiameterMm === 0
+    if (!blocked) pass = false
+    details.push(
+      `拦截：篾长 ${f1(2 * lash)}mm（扣完两端余量为 0）${!badRib.ok ? '已拦住' : '未拦住！'}，空篾长 ${!badRing.ok ? '已拦住' : '未拦住！'}，均不回写负数直径`
+    )
+  }
+
+  return {
+    id: 'CHK-09',
+    title: '尺寸反推：同一输入反复应用一致、正算闭合、余量以下拦截',
+    pass,
+    value: pass ? '通过' : '失败',
+    detail: details.join('；')
+  }
 }
 
 function suggestDivisions(l: Lantern, netArea: number, ratio: number): number | null {
@@ -219,19 +319,4 @@ export const CALIBRATION_CIRCLE_MM = 100
 
 function frameGeometryOf(l: Lantern) {
   return buildFrame(l).geometry
-}
-
-/** 由圆周长反推直径（尺寸反推工具用） */
-export function diameterFromPerimeter(lengthMm: number, n: number, polygon: boolean, lashMm: number): number {
-  void n
-  void polygon
-  void lashMm
-  return lengthMm / Math.PI
-}
-
-/** 由母线（竖篾）长度反推可用最大直径 */
-export function diameterFromRib(l: Lantern, ribLengthMm: number): number {
-  const segs = segmentInfos(buildFrame(l).geometry)
-  const len = segs.reduce((a, s) => a + s.slantMm, 0)
-  return (ribLengthMm * l.maxDiameterMm) / Math.max(1, len)
 }

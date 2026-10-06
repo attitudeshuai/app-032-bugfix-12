@@ -6,6 +6,7 @@ import { reactive, watch } from 'vue'
 import type { Lantern } from './types'
 import { CRAFT, coveringSpec, presetById, PRESETS } from './craft'
 import { buildGeometry, effectiveHeight, r1 } from './geometry'
+import type { ReverseResult } from './reverse'
 
 const KEY = 'lantern-frame-lofting.v1'
 
@@ -94,6 +95,20 @@ export function distributeLayers(l: Lantern) {
   syncLayerDiameters(l)
 }
 
+/**
+ * 应用尺寸反推结果：一处写回，三处同源刷新——
+ * 最大直径 / 上口 / 底口按同一比例整毫米取整写回；总高与各分段高不动（反推保的是比例）；
+ * 各层直径立即按新轮廓重算。参数页数值、灯体几何（预览）、所有派生视图都读这一份状态。
+ */
+export function applyReverseResult(l: Lantern, r: ReverseResult) {
+  if (!r.ok) return
+  l.maxDiameterMm = r.roundedDiameterMm
+  l.mouthDiameterMm = r.mouthDiameterMm
+  l.baseDiameterMm = r.baseDiameterMm
+  syncLayerDiameters(l) // 分段直径随新轮廓重算；effectiveHeight 只由分段高决定，总高保持
+  l.updatedAt = new Date().toISOString()
+}
+
 export function addLantern(l: Lantern) {
   state.lanterns.unshift(l)
   return l
@@ -176,6 +191,7 @@ export function useLanternStore() {
     duplicateLantern,
     removeLantern,
     distributeLayers,
-    syncLayerDiameters
+    syncLayerDiameters,
+    applyReverseResult
   }
 }

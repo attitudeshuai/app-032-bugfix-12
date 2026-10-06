@@ -80,6 +80,11 @@ export function ringPerimeter(r: number, n: number, polygon: boolean): number {
   return polygon ? n * polygonEdge(r, n) : TAU * r
 }
 
+/** 横篾圈接头处数（规格书 §8）：圆形 1 处，多边形按棱数 n 处；正算备料与反推共用同一规则 */
+export function ringJoints(n: number, polygon: boolean): number {
+  return polygon ? Math.max(3, Math.round(n)) : 1
+}
+
 /** 顶/底盖面积：圆形 πR² / 正 n 边形 (n/2)R²sin(2π/n) */
 export function capArea(r: number, n: number, polygon: boolean): number {
   return polygon ? ((n / 2) * r * r * Math.sin(TAU / n)) : Math.PI * r * r
